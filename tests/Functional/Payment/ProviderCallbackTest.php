@@ -12,9 +12,12 @@ use App\Payment\Infrastructure\Messenger\ExpirePaymentHandler;
 use App\Payment\Infrastructure\Repository\TransactionEventRepository;
 use App\Payment\Infrastructure\Repository\TransactionRepository;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
+use Symfony\Component\Clock\Test\ClockSensitiveTrait;
 
 final class ProviderCallbackTest extends PaymentTestCase
 {
+    use ClockSensitiveTrait;
+
     public function testUnSecretAbsentOuFauxEstRefuse(): void
     {
         $client = static::createClient();
@@ -57,7 +60,7 @@ final class ProviderCallbackTest extends PaymentTestCase
     {
         $client = static::createClient();
         $merchant = $this->openMerchant($client);
-        $id = $this->pending($client, $merchant['api_key'], $merchant['email']);
+        $id = $this->pending($client, $merchant['api_key'], $merchant['email'], '+22890000000');
 
         $this->postCallback($client, $id, 'fail', FailureCode::InsufficientFunds->value, 'test_provider_secret');
         self::assertSame(204, $client->getResponse()->getStatusCode(), (string) $client->getResponse()->getContent());
@@ -73,7 +76,9 @@ final class ProviderCallbackTest extends PaymentTestCase
     {
         $client = static::createClient();
         $merchant = $this->openMerchant($client);
+        self::mockTime('2026-06-01 12:00:00');
         $id = $this->pending($client, $merchant['api_key'], $merchant['email']);
+        self::mockTime('2026-06-01 12:01:00');
 
         $handler = static::getContainer()->get(ExpirePaymentHandler::class);
         self::assertInstanceOf(ExpirePaymentHandler::class, $handler);
@@ -104,9 +109,68 @@ final class ProviderCallbackTest extends PaymentTestCase
         self::assertSame([], $this->events($transaction));
     }
 
-    private function pending(KernelBrowser $client, string $apiKey, string $email): string
+    public function testUnSuccesSurUnNumeroEnEchecEstRefuse(): void
     {
-        $this->postTransaction($client, $apiKey, $this->paymentBody(reference: 'CB-'.substr($this->idempotencyKey(), 0, 8)), $this->idempotencyKey());
+        $client = static::createClient();
+        $merchant = $this->openMerchant($client);
+        $id = $this->pending($client, $merchant['api_key'], $merchant['email'], '+22890000000');
+
+        $this->postCallback($client, $id, 'succeed', null, 'test_provider_secret');
+        $this->assertProblem($client, 422, '/errors/invalid-transition');
+        $transaction = $this->load($merchant['email'], $id);
+        self::assertSame(TransactionStatus::Pending, $transaction->getStatus());
+        self::assertNull($transaction->getFailureReason());
+        self::assertCount(1, $this->events($transaction));
+    }
+
+    public function testToutResultatEstRefusePourUnNumeroSansCallback(): void
+    {
+        $client = static::createClient();
+        $merchant = $this->openMerchant($client);
+        $id = $this->pending($client, $merchant['api_key'], $merchant['email'], '+22890000001');
+
+        $this->postCallback($client, $id, 'succeed', null, 'test_provider_secret');
+        $this->assertProblem($client, 422, '/errors/invalid-transition');
+        $this->postCallback($client, $id, 'fail', FailureCode::Timeout->value, 'test_provider_secret');
+        $this->assertProblem($client, 422, '/errors/invalid-transition');
+        $transaction = $this->load($merchant['email'], $id);
+        self::assertSame(TransactionStatus::Pending, $transaction->getStatus());
+        self::assertCount(1, $this->events($transaction));
+    }
+
+    public function testCinquanteCallbacksValidesNeLimitentPasEtLeOnziemeSecretInvalideRepond429(): void
+    {
+        $client = static::createClient();
+        $client->disableReboot();
+        $merchant = $this->openMerchant($client);
+        $id = $this->pending($client, $merchant['api_key'], $merchant['email']);
+
+        for ($index = 0; $index < 50; ++$index) {
+            $this->postCallback($client, $id, 'succeed', null, 'test_provider_secret');
+            self::assertSame(204, $client->getResponse()->getStatusCode(), (string) $client->getResponse()->getContent());
+        }
+
+        for ($index = 0; $index < 10; ++$index) {
+            $this->postCallback($client, $id, 'succeed', null, 'mauvais-secret');
+            $this->assertProblem($client, 401, '/errors/authentication');
+        }
+
+        $this->postCallback($client, $id, 'succeed', null, 'mauvais-secret');
+        $this->assertProblem($client, 429, '/errors/rate-limit');
+        self::assertNotSame('', (string) $client->getResponse()->headers->get('Retry-After'));
+
+        $this->postCallback($client, $id, 'succeed', null, 'test_provider_secret');
+        self::assertSame(204, $client->getResponse()->getStatusCode(), (string) $client->getResponse()->getContent());
+    }
+
+    private function pending(KernelBrowser $client, string $apiKey, string $email, string $phone = '+22890123452'): string
+    {
+        $this->postTransaction(
+            $client,
+            $apiKey,
+            $this->paymentBody(reference: 'CB-'.substr($this->idempotencyKey(), 0, 8), phone: $phone),
+            $this->idempotencyKey(),
+        );
         self::assertSame(201, $client->getResponse()->getStatusCode(), (string) $client->getResponse()->getContent());
         $id = $this->stringValue($this->decode($client), 'id');
         $transaction = $this->load($email, $id);

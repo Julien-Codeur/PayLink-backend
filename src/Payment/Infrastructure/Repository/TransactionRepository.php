@@ -6,6 +6,8 @@ namespace App\Payment\Infrastructure\Repository;
 
 use App\Merchant\Domain\Entity\Merchant;
 use App\Payment\Domain\Entity\Transaction;
+use App\Payment\Domain\Entity\TransactionEvent;
+use App\Payment\Domain\Enum\TransactionStatus;
 use App\Payment\Domain\Model\TransactionListCriteria;
 use App\Payment\Domain\Model\TransactionPage;
 use Doctrine\Bundle\DoctrineBundle\Repository\ServiceEntityRepository;
@@ -127,6 +129,52 @@ final class TransactionRepository extends ServiceEntityRepository
                 ->setParameter('referencePrefix', $prefix)
                 ->setParameter('phone', $criteria->query);
         }
+    }
+
+    /**
+     * @return list<Transaction>
+     */
+    public function findInitiatedCreatedBefore(\DateTimeImmutable $before, int $limit): array
+    {
+        return $this->onlyTransactions(
+            $this->createQueryBuilder('transaction')
+                ->andWhere('transaction.status = :status')
+                ->andWhere('transaction.createdAt <= :before')
+                ->setParameter('status', TransactionStatus::Initiated)
+                ->setParameter('before', $before)
+                ->orderBy('transaction.createdAt', 'ASC')
+                ->addOrderBy('transaction.id', 'ASC')
+                ->setMaxResults($limit)
+                ->getQuery()
+                ->getResult(),
+        );
+    }
+
+    /**
+     * @return list<Transaction>
+     */
+    public function findPendingMovedBefore(\DateTimeImmutable $before, int $limit): array
+    {
+        return $this->onlyTransactions(
+            $this->manager()->createQueryBuilder()
+                ->select('transaction')
+                ->from(Transaction::class, 'transaction')
+                ->innerJoin(
+                    TransactionEvent::class,
+                    'event',
+                    'WITH',
+                    'event.transaction = transaction AND event.toStatus = :pending',
+                )
+                ->andWhere('transaction.status = :pending')
+                ->andWhere('event.createdAt <= :before')
+                ->setParameter('pending', TransactionStatus::Pending)
+                ->setParameter('before', $before)
+                ->orderBy('event.createdAt', 'ASC')
+                ->addOrderBy('transaction.id', 'ASC')
+                ->setMaxResults($limit)
+                ->getQuery()
+                ->getResult(),
+        );
     }
 
     private function one(QueryBuilder $queryBuilder): ?Transaction

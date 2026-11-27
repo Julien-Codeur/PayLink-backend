@@ -1,0 +1,12 @@
+framework:
+    rate_limiter:
+        provider_callback_auth:
+            policy: fixed_window
+            limit: 10
+            interval: '1 minute'
+
+when@test:
+    framework:
+        rate_limiter:
+            provider_callback_auth:
+                storage_service: App\Tests\Double\DurableRateLimiterStorage

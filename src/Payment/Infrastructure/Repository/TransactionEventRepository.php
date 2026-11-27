@@ -6,6 +6,7 @@ namespace App\Payment\Infrastructure\Repository;
 
 use App\Payment\Domain\Entity\Transaction;
 use App\Payment\Domain\Entity\TransactionEvent;
+use App\Payment\Domain\Enum\TransactionStatus;
 use Doctrine\Bundle\DoctrineBundle\Repository\ServiceEntityRepository;
 use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\ORM\QueryBuilder;
@@ -51,6 +52,21 @@ final class TransactionEventRepository extends ServiceEntityRepository
         }
 
         return $events;
+    }
+
+    public function pendingAt(Transaction $transaction): ?\DateTimeImmutable
+    {
+        $event = $this->createQueryBuilder('event')
+            ->andWhere('IDENTITY(event.transaction) = :transactionId')
+            ->andWhere('event.toStatus = :pending')
+            ->setParameter('transactionId', $transaction->getId(), 'uuid')
+            ->setParameter('pending', TransactionStatus::Pending)
+            ->orderBy('event.createdAt', 'DESC')
+            ->setMaxResults(1)
+            ->getQuery()
+            ->getOneOrNullResult();
+
+        return $event instanceof TransactionEvent ? $event->getCreatedAt() : null;
     }
 
     private function manager(): EntityManagerInterface

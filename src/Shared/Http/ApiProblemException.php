@@ -84,6 +84,18 @@ final class ApiProblemException extends \RuntimeException
         );
     }
 
+    public static function rateLimit(int $retryAfter): self
+    {
+        return new self(
+            '/errors/rate-limit',
+            'Trop de tentatives',
+            429,
+            'Trop de secrets invalides. Réessayez plus tard.',
+            [],
+            max(1, $retryAfter),
+        );
+    }
+
     public static function apiKeyLimit(): self
     {
         return new self(
