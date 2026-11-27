@@ -84,6 +84,26 @@ final class ApiProblemException extends \RuntimeException
         );
     }
 
+    public static function refundNotAllowed(): self
+    {
+        return new self(
+            '/errors/refund-not-allowed',
+            'Remboursement refusé',
+            422,
+            'Cette transaction ne peut pas être remboursée.',
+        );
+    }
+
+    public static function refundExceedsBalance(): self
+    {
+        return new self(
+            '/errors/refund-exceeds-balance',
+            'Montant trop élevé',
+            422,
+            'Le montant dépasse le restant remboursable.',
+        );
+    }
+
     public static function rateLimit(int $retryAfter): self
     {
         return new self(
