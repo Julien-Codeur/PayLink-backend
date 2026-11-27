@@ -10,6 +10,7 @@ final readonly class TransactionResult
         public string $body,
         public int $statusCode,
         public bool $replayed,
+        public string $transactionId,
     ) {
     }
 }

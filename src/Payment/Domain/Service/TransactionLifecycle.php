@@ -38,12 +38,12 @@ final class TransactionLifecycle
         $this->apply($transaction, TransactionTransition::START, TransitionReason::START);
     }
 
-    public function apply(Transaction $transaction, string $transition, string $reason): void
+    public function apply(Transaction $transaction, string $transition, string $reason, ?string $failureCode = null): void
     {
-        $this->commit($transaction, $transition, $reason, true);
+        $this->commit($transaction, $transition, $reason, $failureCode, true);
     }
 
-    private function commit(Transaction $transaction, string $transition, string $reason, bool $retry): void
+    private function commit(Transaction $transaction, string $transition, string $reason, ?string $failureCode, bool $retry): void
     {
         if (!$this->workflow->can($transaction, $transition)) {
             $this->deny($transaction, $transition);
@@ -70,7 +70,7 @@ final class TransactionLifecycle
         }
 
         if (TransactionTransition::FAIL === $transition) {
-            $transaction->recordFailure($reason);
+            $transaction->recordFailure($failureCode ?? $reason);
         }
 
         try {
@@ -85,7 +85,7 @@ final class TransactionLifecycle
                 $this->deny($fresh, $transition);
             }
 
-            $this->commit($fresh, $transition, $reason, false);
+            $this->commit($fresh, $transition, $reason, $failureCode, false);
         }
     }
 

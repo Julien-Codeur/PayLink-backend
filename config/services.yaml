@@ -24,6 +24,7 @@ services:
             - '../src/Merchant/Domain/Model/'
             - '../src/Payment/Domain/Entity/'
             - '../src/Payment/Domain/Model/'
+            - '../src/Payment/Domain/Message/'
             - '../src/Shared/Http/ApiProblemException.php'
             - '../src/Shared/Http/ApiProblemResponse.php'
 
@@ -32,6 +33,9 @@ services:
 
     App\Payment\Domain\Service\TransactionLifecycle:
         public: true
+
+    App\Payment\Domain\Contract\PaymentProvider:
+        alias: App\Payment\Infrastructure\Provider\CallbackSchedulingProvider
 
 when@test:
     services:

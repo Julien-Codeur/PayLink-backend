@@ -76,7 +76,7 @@ final class CreateTransaction
         $this->entityManager->persist($transaction);
         $transaction->rememberResponse(201, $this->responses->encodeCreated($transaction));
 
-        return new TransactionResult($transaction->getIdempotencyResponseBody(), 201, false);
+        return new TransactionResult($transaction->getIdempotencyResponseBody(), 201, false, (string) $transaction->getId());
     }
 
     private function replayAfterConflict(Uuid $merchantId, CreateTransactionCommand $command): TransactionResult
@@ -115,6 +115,7 @@ final class CreateTransaction
             $existing->getIdempotencyResponseBody(),
             $existing->getIdempotencyResponseStatus(),
             true,
+            (string) $existing->getId(),
         );
     }
 

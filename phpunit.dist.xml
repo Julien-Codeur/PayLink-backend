@@ -17,10 +17,16 @@
         <env name="APP_DEBUG" value="1" force="true" />
         <env name="APP_SECRET" value="test_secret_not_for_production" force="true" />
         <env name="DATABASE_URL" value="mysql://paylink:paylink@mysql:3306/paylink?serverVersion=8.0&amp;charset=utf8mb4" force="true" />
+        <env name="MESSENGER_TRANSPORT_DSN" value="in-memory://" force="true" />
+        <env name="PAYLINK_PROVIDER_CALLBACK_SECRET" value="test_provider_secret" force="true" />
+        <env name="PAYLINK_PAYMENT_TIMEOUT_SECONDS" value="60" force="true" />
         <server name="APP_ENV" value="test" force="true" />
         <server name="APP_DEBUG" value="1" force="true" />
         <server name="APP_SECRET" value="test_secret_not_for_production" force="true" />
         <server name="DATABASE_URL" value="mysql://paylink:paylink@mysql:3306/paylink?serverVersion=8.0&amp;charset=utf8mb4" force="true" />
+        <server name="MESSENGER_TRANSPORT_DSN" value="in-memory://" force="true" />
+        <server name="PAYLINK_PROVIDER_CALLBACK_SECRET" value="test_provider_secret" force="true" />
+        <server name="PAYLINK_PAYMENT_TIMEOUT_SECONDS" value="60" force="true" />
         <server name="SHELL_VERBOSITY" value="-1" />
     </php>
 

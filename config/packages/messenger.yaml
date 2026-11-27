@@ -1,0 +1,34 @@
+framework:
+    messenger:
+        failure_transport: failed
+        transports:
+            async:
+                dsn: '%env(MESSENGER_TRANSPORT_DSN)%'
+                retry_strategy:
+                    max_retries: 3
+                    delay: 1000
+                options:
+                    exchange:
+                        name: paylink
+                        type: direct
+                    queues:
+                        paylink: ~
+            failed:
+                dsn: '%env(MESSENGER_TRANSPORT_DSN)%'
+                options:
+                    exchange:
+                        name: paylink_failed
+                        type: direct
+                    queues:
+                        paylink_failed: ~
+        routing:
+            App\Payment\Domain\Message\ProcessPayment: async
+            App\Payment\Domain\Message\ExpirePayment: async
+            App\Payment\Domain\Message\DeliverProviderCallback: async
+
+when@test:
+    framework:
+        messenger:
+            transports:
+                async: 'in-memory://'
+                failed: 'in-memory://'
