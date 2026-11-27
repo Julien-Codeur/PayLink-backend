@@ -1,0 +1,32 @@
+framework:
+    workflows:
+        transaction:
+            type: state_machine
+            marking_store:
+                service: App\Payment\Infrastructure\Workflow\TransactionMarkingStore
+            supports:
+                - App\Payment\Domain\Entity\Transaction
+            initial_marking: INITIATED
+            places:
+                - INITIATED
+                - PENDING
+                - SUCCESS
+                - FAILED
+                - PARTIALLY_REFUNDED
+                - REFUNDED
+            transitions:
+                start:
+                    from: INITIATED
+                    to: PENDING
+                succeed:
+                    from: PENDING
+                    to: SUCCESS
+                fail:
+                    from: PENDING
+                    to: FAILED
+                refund_partial:
+                    from: [SUCCESS, PARTIALLY_REFUNDED]
+                    to: PARTIALLY_REFUNDED
+                refund_full:
+                    from: [SUCCESS, PARTIALLY_REFUNDED]
+                    to: REFUNDED
