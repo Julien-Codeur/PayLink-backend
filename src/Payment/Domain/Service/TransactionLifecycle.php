@@ -76,6 +76,8 @@ final class TransactionLifecycle
         try {
             $manager->flush();
         } catch (OptimisticLockException) {
+            // Le retry recharge la transaction sans rappeler prepareRefund.
+            // CreateRefund évite ce chemin grâce au verrou FOR UPDATE.
             $this->managerRegistry->resetManager();
             $fresh = $this->reload($transaction->getId());
             if (!$fresh instanceof Transaction) {

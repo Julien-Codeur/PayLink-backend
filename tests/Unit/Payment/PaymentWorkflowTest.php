@@ -90,6 +90,19 @@ final class PaymentWorkflowTest extends KernelTestCase
         }
     }
 
+    public function testUnRechargementSansPrepareRefundRefuseLeRemboursement(): void
+    {
+        // TransactionLifecycle, sur OptimisticLockException, recharge la transaction
+        // et rappelle can() sans prepareRefund. La garde refuse, comme ici.
+        $prepared = $this->reach(TransactionStatus::Success);
+        $prepared->prepareRefund(0, 1000);
+        self::assertTrue($this->workflow($prepared)->can($prepared, 'refund_partial'));
+
+        $reloaded = $this->reach(TransactionStatus::Success);
+        self::assertFalse($this->workflow($reloaded)->can($reloaded, 'refund_partial'));
+        self::assertFalse($this->workflow($reloaded)->can($reloaded, 'refund_full'));
+    }
+
     public function testLeRemboursementPartielEstRefuseQuandLaSommeEgaleLeMontant(): void
     {
         $transaction = $this->reach(TransactionStatus::Success);

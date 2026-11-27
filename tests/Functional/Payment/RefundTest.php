@@ -12,6 +12,8 @@ use App\Payment\Domain\Service\TransitionReason;
 use App\Payment\Infrastructure\Repository\RefundRepository;
 use App\Payment\Infrastructure\Repository\TransactionEventRepository;
 use App\Payment\Infrastructure\Repository\TransactionRepository;
+use Doctrine\DBAL\Connection;
+use Doctrine\DBAL\DriverManager;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Component\Uid\Uuid;
@@ -152,6 +154,25 @@ final class RefundTest extends PaymentTestCase
         self::assertSame(0, $this->refundCount($id));
     }
 
+    public function testUnMontantNonEntierEstRefuse(): void
+    {
+        $client = static::createClient();
+        $merchant = $this->openMerchant($client);
+        $id = $this->succeeded($client, $merchant, 5000);
+        $key = $this->idempotencyKey();
+
+        foreach ([
+            '{"amount":1500.5}',
+            '{"amount":"1500"}',
+            '{"amount":null}',
+            '{"amount":9223372036854775808}',
+        ] as $body) {
+            $this->postRawRefund($client, $merchant['api_key'], $id, $body, $key);
+            $this->assertProblem($client, 400, '/errors/validation');
+            self::assertSame(0, $this->refundCount($id));
+        }
+    }
+
     public function testUnMarchandSuspenduNeRemboursePas(): void
     {
         $client = static::createClient();
@@ -219,6 +240,51 @@ final class RefundTest extends PaymentTestCase
         self::assertSame(TransactionStatus::Success, $this->load($owner['email'], $id)->getStatus());
     }
 
+    public function testUnVerrouExterneBloqueLeRemboursementJusquAuCommit(): void
+    {
+        $client = static::createClient();
+        $merchant = $this->openMerchant($client);
+        $id = $this->succeeded($client, $merchant, 5000);
+        static::ensureKernelShutdown();
+
+        $lock = $this->openLockingConnection();
+        $lock->beginTransaction();
+        $process = null;
+        try {
+            $found = $lock->executeQuery(
+                'SELECT id FROM `transaction` WHERE id = ? FOR UPDATE',
+                [Uuid::fromString($id)->toBinary()],
+            )->fetchOne();
+            self::assertNotFalse($found);
+
+            $started = $this->startLockedRefund($merchant['api_key'], $id);
+            $process = $started['process'];
+            $this->waitUntilRefundWaits($lock, $process, $started['ready'], $started['error']);
+            sleep(1);
+            $status = proc_get_status($process);
+            self::assertTrue($status['running']);
+            self::assertStringContainsString('for update', strtolower($this->currentStatements($lock)));
+
+            $lock->commit();
+            $payload = $this->finishRefundProcess($process, $started['result'], $started['error']);
+            $process = null;
+            self::assertSame(201, $payload['status'], $payload['body']);
+            self::assertSame(1, $this->refundCount($id));
+        } finally {
+            if ($lock->isTransactionActive()) {
+                $lock->rollBack();
+            }
+            $lock->close();
+            if (\is_resource($process)) {
+                proc_close($process);
+            }
+        }
+    }
+
+    /**
+     * Fumée : deux processus et des clés distinctes dont la somme dépasse le montant.
+     * La preuve du verrou est testUnVerrouExterneBloqueLeRemboursementJusquAuCommit.
+     */
     public function testDeuxRemboursementsSimultanesDontLaSommeDepasse(): void
     {
         $client = static::createClient();
@@ -336,6 +402,134 @@ final class RefundTest extends PaymentTestCase
         ]);
     }
 
+    private function postRawRefund(KernelBrowser $client, string $apiKey, string $id, string $body, string $idempotencyKey): void
+    {
+        $client->request('POST', '/api/v1/transactions/'.$id.'/refunds', server: [
+            'HTTP_ACCEPT' => 'application/json',
+            'CONTENT_TYPE' => 'application/json',
+            'HTTP_X_API_KEY' => $apiKey,
+            'HTTP_IDEMPOTENCY_KEY' => $idempotencyKey,
+        ], content: $body);
+    }
+
+    private function openLockingConnection(): Connection
+    {
+        $current = static::getContainer()->get(Connection::class);
+        self::assertInstanceOf(Connection::class, $current);
+        /** @var array<string, mixed> $params */
+        $params = $current->getParams();
+        unset($params['pdo']);
+
+        return DriverManager::getConnection($params);
+    }
+
+    /**
+     * @return array{process: resource, ready: string, result: string, error: string}
+     */
+    private function startLockedRefund(string $apiKey, string $id): array
+    {
+        $projectDir = dirname(__DIR__, 3);
+        $script = tempnam(sys_get_temp_dir(), 'paylink-lock-script');
+        $ready = tempnam(sys_get_temp_dir(), 'paylink-lock-ready');
+        $result = tempnam(sys_get_temp_dir(), 'paylink-lock-result');
+        $output = tempnam(sys_get_temp_dir(), 'paylink-lock-output');
+        $error = tempnam(sys_get_temp_dir(), 'paylink-lock-error');
+        self::assertIsString($script);
+        self::assertIsString($ready);
+        self::assertIsString($result);
+        self::assertIsString($output);
+        self::assertIsString($error);
+        file_put_contents($script, $this->lockingRunner($projectDir));
+        file_put_contents($ready, '');
+        $body = json_encode(['amount' => 1000], \JSON_THROW_ON_ERROR);
+        $command = sprintf(
+            '%s %s %s %s %s %s %s %s',
+            escapeshellarg(\PHP_BINARY),
+            escapeshellarg($script),
+            escapeshellarg($id),
+            escapeshellarg($apiKey),
+            escapeshellarg($this->idempotencyKey()),
+            escapeshellarg($body),
+            escapeshellarg($result),
+            escapeshellarg($ready),
+        );
+        $pipes = [];
+        $process = proc_open($command, [
+            0 => ['pipe', 'r'],
+            1 => ['file', $output, 'w'],
+            2 => ['file', $error, 'w'],
+        ], $pipes);
+        self::assertIsResource($process);
+        fclose($pipes[0]);
+
+        return ['process' => $process, 'ready' => $ready, 'result' => $result, 'error' => $error];
+    }
+
+    /**
+     * @param resource $process
+     */
+    private function waitUntilRefundWaits(Connection $lock, $process, string $ready, string $error): void
+    {
+        $deadline = microtime(true) + 10;
+        while (microtime(true) < $deadline && '' === (string) file_get_contents($ready)) {
+            $status = proc_get_status($process);
+            if (!$status['running']) {
+                self::fail((string) file_get_contents($error));
+            }
+            usleep(50_000);
+        }
+
+        $deadline = microtime(true) + 10;
+        while (microtime(true) < $deadline) {
+            $status = proc_get_status($process);
+            if (!$status['running']) {
+                self::fail((string) file_get_contents($error));
+            }
+            if (str_contains(strtolower($this->currentStatements($lock)), 'for update')) {
+                return;
+            }
+            usleep(50_000);
+        }
+
+        self::fail("Aucun SELECT FOR UPDATE en attente.\n".$this->currentStatements($lock));
+    }
+
+    /**
+     * @param resource $process
+     *
+     * @return array{status: int, body: string}
+     */
+    private function finishRefundProcess($process, string $result, string $error): array
+    {
+        $exitCode = proc_close($process);
+        $raw = (string) file_get_contents($result);
+        self::assertSame(0, $exitCode, (string) file_get_contents($error)."\n".$raw);
+        $decoded = json_decode($raw, true);
+        self::assertIsArray($decoded);
+        self::assertIsInt($decoded['status']);
+        self::assertIsString($decoded['body']);
+
+        return ['status' => $decoded['status'], 'body' => $decoded['body']];
+    }
+
+    private function currentStatements(Connection $connection): string
+    {
+        $ownId = (int) $connection->fetchOne('SELECT CONNECTION_ID()');
+        $rows = $connection->fetchAllAssociative('SHOW FULL PROCESSLIST');
+        $statements = [];
+        foreach ($rows as $row) {
+            if ((int) ($row['Id'] ?? 0) === $ownId) {
+                continue;
+            }
+            $sql = $row['Info'] ?? $row['info'] ?? null;
+            if (\is_string($sql) && '' !== $sql) {
+                $statements[] = $sql;
+            }
+        }
+
+        return implode("\n", $statements);
+    }
+
     private function managed(string $email, string $id): Transaction
     {
         $transaction = static::getContainer()->get(TransactionRepository::class)->findOneForMerchant($this->merchant($email), $id);
@@ -390,6 +584,62 @@ require {$autoload};
 
 \$_SERVER['APP_ENV'] = 'test';
 \$_ENV['APP_ENV'] = 'test';
+
+try {
+    \$kernel = new Kernel('test', true);
+    \$request = Request::create(
+        '/api/v1/transactions/'.\$argv[1].'/refunds',
+        'POST',
+        [],
+        [],
+        [],
+        [
+            'CONTENT_TYPE' => 'application/json',
+            'HTTP_ACCEPT' => 'application/json',
+            'HTTP_X_API_KEY' => \$argv[2],
+            'HTTP_IDEMPOTENCY_KEY' => \$argv[3],
+        ],
+        \$argv[4],
+    );
+    \$response = \$kernel->handle(\$request);
+    file_put_contents(\$argv[5], json_encode([
+        'status' => \$response->getStatusCode(),
+        'body' => \$response->getContent(),
+    ], JSON_THROW_ON_ERROR));
+    \$kernel->terminate(\$request, \$response);
+} catch (Throwable \$throwable) {
+    fwrite(STDERR, \$throwable::class.': '.\$throwable->getMessage().PHP_EOL.\$throwable->getTraceAsString());
+    exit(1);
+}
+PHP;
+    }
+
+    private function lockingRunner(string $projectDir): string
+    {
+        $autoload = var_export($projectDir.'/vendor/autoload.php', true);
+        $env = var_export($projectDir.'/.env', true);
+
+        return <<<PHP
+<?php
+declare(strict_types=1);
+
+use App\Kernel;
+use Symfony\Component\Dotenv\Dotenv;
+use Symfony\Component\HttpFoundation\Request;
+
+require {$autoload};
+
+\$_SERVER['APP_ENV'] = 'test';
+\$_SERVER['APP_DEBUG'] = '1';
+\$_ENV['APP_ENV'] = 'test';
+\$_ENV['APP_DEBUG'] = '1';
+
+(new Dotenv())->bootEnv({$env}, 'test');
+
+\$_SERVER['APP_ENV'] = 'test';
+\$_ENV['APP_ENV'] = 'test';
+
+file_put_contents(\$argv[6], '1');
 
 try {
     \$kernel = new Kernel('test', true);
